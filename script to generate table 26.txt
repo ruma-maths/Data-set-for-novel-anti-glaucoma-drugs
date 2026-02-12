@@ -1,0 +1,101 @@
+import pandas as pd
+import numpy as np
+import warnings
+from sklearn.model_selection import LeaveOneOut
+from sklearn.linear_model import LinearRegression, Ridge, ElasticNet, BayesianRidge
+from sklearn.metrics import r2_score, mean_squared_error
+
+# Ignore convergence warnings
+warnings.filterwarnings("ignore")
+
+# --- Data ---
+topological_data = {
+    "Drug": ["Acetazolamide", "Brimonidine", "Brinzolamide", "Ethoxzolamide", "Diclofenamide",
+             "Dorzolamide", "Zonisamide", "Methazolamide", "Indisulam"],
+    "ZC1": [124, 270, 172, 174, 188, 246, 154, 142, 288],
+    "ZC2": [113, 310, 202, 187, 184, 282, 150, 138, 312],
+    "FL": [440, 1128, 610, 644, 754, 1030, 584, 522, 1118],
+    "RL1": [1.066111, 2.074575, 1.180833, 1.28, 1.05, 1.413, 1.045, 1.13, 1.45],
+    "RL2": [1.038889, 1.804286, 1.198056, 1.19, 0.98, 1.232, 1.09, 1.07, 1.45],
+    "HLM1": [482, 1280, 826, 768, 784, 1164, 640, 580, 1302],
+    "HLM2": [1307, 5640, 2596, 2573, 2800, 5134, 2078, 1868, 4396],
+    "SL": [5.580832, 9.93335, 7.661032, 6.99, 6.33, 7.797, 6.198, 5.9, 10.05],
+    "GAL": [12.47005, 23.4873, 18.77683, 16.7, 15.5, 19.55, 14.22, 13.5, 25.47],
+    "PL": [5.181009, 9.040366, 6.34666, 6.14, 5.25, 6.573, 5.624, 5.39, 8.025],
+    "ABCL": [3.635354, 4.708102, 4.257891, 3.48, 3.57, 3.694, 4.087, 3.75, 5.323],
+    "LG1": [189, 474, 324, 297, 292, 428, 244, 224, 492],
+    "LG2": [768, 2618, 1434, 1376, 1432, 2388, 1108, 1006, 2348],
+    "SOL": [55.51642, 118.0016, 87.23003, 78.9, 78.6, 105.1, 68.91, 62.5, 129.8]
+}
+
+property_data = {
+    "Drug": ["Acetazolamide", "Brimonidine", "Brinzolamide", "Ethoxzolamide", "Diclofenamide",
+             "Dorzolamide", "Zonisamide", "Methazolamide", "Indisulam"],
+    "Boiling Point": [514.3, 432.6, 586, 464.9, 590.5, 575.8, 457.2, 402, 668.9],
+    "Enthalpy": [82.7, 68.8, 87.5, 72.6, 88.1, 86.2, 71.7, 65.3, 98.3],
+    "Flash Point": [264.8, 215.4, 308.2, 235, 310.9, 302, 230.3, 196.9, 358.4],
+    "Molar Refractivity": [47.7, 68.4, 90.4, 63.7, 61.3, 75.5, 51.7, 53.1, 92.7],
+    "Polarizability": [18.9, 27.1, 35.8, 25.2, 24.3, 29.9, 20.5, 21, 36.7],
+    "Surface Tension": [99.4, 66.1, 69.7, 64, 69.8, 69.4, 71.1, 80, 81.3],
+    "Molar Volume": [110.6, 106.3, 255.4, 175.7, 171.2, 211, 140.6, 131.9, 231.9]
+}
+
+# Convert to DataFrames
+X = pd.DataFrame(topological_data).drop(columns=["Drug"])
+y_df = pd.DataFrame(property_data).drop(columns=["Drug"])
+
+# Models with fixed parameters for convergence
+models = {
+    "Linear Regression": LinearRegression(),
+    "Ridge Regression": Ridge(alpha=1.0),
+    "Elastic Net Regression": ElasticNet(alpha=0.01, l1_ratio=0.5, max_iter=10000),
+    "Bayesian Linear Regression": BayesianRidge()
+}
+
+# Bootstrap CI function
+def bootstrap_ci(trues, preds, metric_func, n_boot=1000, alpha=0.05):
+    metrics = []
+    n = len(trues)
+    for _ in range(n_boot):
+        idx = np.random.randint(0, n, n)
+        metrics.append(metric_func(np.array(trues)[idx], np.array(preds)[idx]))
+    lower = np.percentile(metrics, 100 * (alpha/2))
+    upper = np.percentile(metrics, 100 * (1 - alpha/2))
+    return lower, upper
+
+# LOOCV
+loo = LeaveOneOut()
+results = []
+
+for prop in y_df.columns:
+    y = y_df[prop]
+    for model_name, model in models.items():
+        preds, trues = [], []
+        for train_idx, test_idx in loo.split(X):
+            X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+            y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_test)
+            preds.append(y_pred[0])
+            trues.append(y_test)
+
+        # Metrics
+        r2 = r2_score(trues, preds)
+        rmse = np.sqrt(mean_squared_error(trues, preds))
+
+        # 95% CI
+        r2_low, r2_high = bootstrap_ci(trues, preds, r2_score)
+        rmse_low, rmse_high = bootstrap_ci(trues, preds, lambda a, b: np.sqrt(mean_squared_error(a, b)))
+
+        results.append({
+            "Property": prop,
+            "Model": model_name,
+            "R²": round(r2, 3),
+            "R² 95% CI": f"[{r2_low:.3f}, {r2_high:.3f}]",
+            "RMSE": round(rmse, 3),
+            "RMSE 95% CI": f"[{rmse_low:.3f}, {rmse_high:.3f}]"
+        })
+
+# Final table
+results_df = pd.DataFrame(results)
+print(results_df.to_string(index=False))
